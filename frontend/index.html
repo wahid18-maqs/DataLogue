@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Datalogue</title>
+    <script>
+      /*
+       * The app's theme is applied before the page paints, so a dark-theme
+       * browser does not flash a pale one on the way in. The settings live
+       * in localStorage under one key; the shape is read here in the same
+       * forgiving way the app reads it.
+       */
+      (function () {
+        try {
+          var raw = window.localStorage.getItem("settings");
+          if (!raw) return;
+          var stored = JSON.parse(raw);
+          var theme = stored && stored.appearance && stored.appearance.app_theme;
+          if (theme === "dark") {
+            document.documentElement.setAttribute("data-theme", "dark");
+          }
+        } catch (err) {
+          // A blocked or corrupt store just means the default theme.
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

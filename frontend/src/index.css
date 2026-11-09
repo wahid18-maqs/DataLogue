@@ -1,0 +1,263 @@
+/* Global styles (Tailwind entry point). */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The app's own palette.
+ *
+ * The colours are stored as red/green/blue channels rather than as hex, so
+ * Tailwind's opacity modifiers (`bg-slate-50/70`) keep working against a
+ * variable. The light values are the same ones the app has always used; the
+ * dark ones are a neutral grayscale, the way a dark interface is usually
+ * built: a near-black page, dark panels, cards a shade lighter, borders
+ * that are only just there, and off-white text.
+ */
+:root {
+  --page: 244 246 249;
+  --surface: 255 255 255;
+  --panel: 255 255 255;
+  --panel-alt: 248 250 252;
+  --drawer: 248 250 252;
+  --fill: 203 213 225;
+  --text-primary: 15 23 42;
+  --text-secondary: 51 65 85;
+  --text-muted: 100 116 139;
+  --slate-50: 248 250 252;
+  --slate-100: 203 211 222;
+  --slate-200: 195 204 216;
+  --slate-300: 188 198 212;
+  --slate-400: 95 111 133;
+  --slate-500: 100 116 139;
+  --slate-600: 71 85 105;
+  --slate-700: 51 65 85;
+  --slate-800: 30 41 59;
+  --slate-900: 15 23 42;
+  --scrim: 15 23 42;
+  --code: 15 23 42;
+  --code-text: 226 232 240;
+  --on-accent: 255 255 255;
+
+  --blue-50: 239 246 255;
+  --blue-100: 219 234 254;
+  --blue-200: 191 219 254;
+  --blue-300: 147 197 253;
+  --blue-400: 96 165 250;
+  --blue-500: 59 130 246;
+  --blue-600: 37 99 235;
+  --blue-700: 29 78 216;
+
+  --rose-50: 255 241 242;
+  --rose-100: 255 228 230;
+  --rose-200: 254 205 211;
+  --rose-500: 244 63 94;
+  --rose-600: 225 29 72;
+  --rose-700: 190 18 60;
+
+  --emerald-50: 236 253 245;
+  --emerald-100: 209 250 229;
+  --emerald-200: 167 243 208;
+  --emerald-500: 16 185 129;
+  --emerald-600: 5 150 105;
+  --emerald-700: 4 120 87;
+
+  --amber-50: 255 251 235;
+  --amber-100: 254 243 199;
+  --amber-200: 253 230 138;
+  --amber-600: 217 119 6;
+  --amber-700: 180 83 9;
+  --amber-800: 146 64 14;
+
+  --indigo-50: 238 242 255;
+  --indigo-500: 99 102 241;
+  --indigo-600: 79 70 229;
+  --indigo-700: 67 56 202;
+}
+
+/*
+ * The dark theme.
+ *
+ * It is built on neutral grays rather than on a tinted palette. The page
+ * is near-black, the panels a shade darker, the cards lighter, and the
+ * borders are white at about a seventh of full strength. The theme calls
+ * for "rgba(255, 255, 255, 0.10)", but at that strength they are too
+ * faint to see against a near-black background, so they are a little
+ * stronger: still subtle, but a divider you can actually make out.
+ *
+ * The borders are stored already mixed with the background, because a
+ * border sits on several different backgrounds and one flat value cannot
+ * stay a tenth-of-white over all of them.
+ */
+[data-theme="dark"] {
+  --page: 33 33 33;
+  --surface: 47 47 47;
+  --panel: 23 23 23;
+  --panel-alt: 23 23 23;
+  --drawer: 23 23 23;
+  --fill: 82 82 82;
+  --text-primary: 241 245 249;
+  --text-secondary: 226 232 240;
+  --text-muted: 176 184 196;
+  --slate-50: 56 56 56;
+  --slate-100: 55 55 55;
+  --slate-200: 76 76 76;
+  --slate-300: 64 64 64;
+  --slate-400: var(--text-muted);
+  --slate-500: 192 198 208;
+  --slate-600: 208 214 224;
+  --slate-700: 220 226 234;
+  --slate-800: var(--text-secondary);
+  --slate-900: var(--text-primary);
+  --scrim: 0 0 0;
+  --code: 20 20 20;
+  --code-text: 209 209 209;
+  --on-accent: 12 12 12;
+
+  --blue-50: 37 45 56;
+  --blue-100: 44 54 68;
+  --blue-200: 58 71 90;
+  --blue-300: 96 132 178;
+  --blue-400: 126 162 204;
+  --blue-500: 148 180 218;
+  --blue-600: 126 162 204;
+  --blue-700: 160 192 228;
+
+  --rose-50: 58 35 38;
+  --rose-100: 70 42 45;
+  --rose-200: 96 56 60;
+  --rose-500: 214 118 126;
+  --rose-600: 226 148 154;
+  --rose-700: 238 186 190;
+
+  --emerald-50: 32 48 40;
+  --emerald-100: 40 58 48;
+  --emerald-200: 56 80 66;
+  --emerald-500: 88 178 132;
+  --emerald-600: 122 194 156;
+  --emerald-700: 162 214 182;
+
+  --amber-50: 56 46 24;
+  --amber-100: 68 56 30;
+  --amber-200: 92 74 38;
+  --amber-600: 208 168 84;
+  --amber-700: 224 192 122;
+  --amber-800: 236 214 168;
+
+  --indigo-50: 38 42 68;
+  --indigo-500: 130 140 190;
+  --indigo-600: 148 158 204;
+  --indigo-700: 176 184 222;
+}
+
+
+body {
+  background-color: rgb(var(--page));
+  color: rgb(var(--slate-900));
+}
+
+/* Slim, unobtrusive scrollbar for chat/log panels. */
+* {
+  scrollbar-width: thin;
+}
+
+/* Ecommerce Dashboard Layout Specifications */
+.app-container {
+  display: flex;
+  min-height: 100vh;
+  background: rgb(var(--page));
+}
+
+.main-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition: margin-left 0.3s ease;
+}
+
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  background: rgb(var(--page));
+  padding: 24px;
+  min-height: 100vh;
+  container: dashboard-layout / inline-size;
+}
+
+/*
+ * Dashboard charts use the bento arrangement shared by the dashboard mock:
+ * the main trend chart occupies the full left column, while the four
+ * supporting cards occupy a 2x2 block on the right.
+ */
+.main-content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 20px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.main-content-grid > * {
+  width: 100%;
+  min-width: 0 !important;
+  max-width: 100%;
+}
+
+.main-content-grid > :first-child {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  min-height: 300px;
+}
+
+.main-content-grid > :nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.main-content-grid > :nth-child(3) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.main-content-grid > :nth-child(4) {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.main-content-grid > :nth-child(5) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+@container dashboard-layout (max-width: 720px) {
+  .main-content-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+
+  .main-content-grid > * {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 1024px) {
+  .main-content-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+
+  .main-content-grid > * {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-layout {
+    padding: 16px;
+    gap: 16px;
+  }
+}
