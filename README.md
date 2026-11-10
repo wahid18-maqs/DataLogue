@@ -66,6 +66,14 @@ narrative, with deterministic templates available as a fallback.
 - Recharts
 - Axios
 
+## Working
+
+<img width="1902" height="911" alt="datalogue-dashboard" src="https://github.com/user-attachments/assets/83414186-af5e-4394-94ce-2de1d9170f21" />
+
+
+https://github.com/user-attachments/assets/87a05bf4-15e0-4ae7-9a81-63fcbb6b57bc
+
+
 ## Architecture
 
 ```text
