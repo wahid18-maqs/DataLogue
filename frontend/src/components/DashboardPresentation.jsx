@@ -191,10 +191,6 @@ export default function DashboardPresentation({ dataset, settings = null }) {
         deck: result.deck,
       });
       setDeck(result.deck || null);
-      setFeedbackHistory((current) => [
-        ...current,
-        { text, timestamp: new Date().toISOString() },
-      ]);
       setActiveIndex(0);
       setNotice(
         `Presentation ready — ${result.deck?.slide_count || 0} slides generated from ${datasetKey}.`
