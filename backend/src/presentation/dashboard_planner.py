@@ -9,10 +9,9 @@ from src.ingestion.schema_detector import detect_schema
 
 logger = logging.getLogger(__name__)
 
-# Recent activity table: rows shown inline, and the cap on rows sent to the
-# client (the remainder are listed in the dropdown).
+# Recent activity table: the client paginates this single consistent table.
 TABLE_PREVIEW_ROWS = 10
-MAX_TABLE_ROWS = 200
+MAX_TABLE_ROWS = 5000
 
 # Heuristic keyword weights for ecommerce role classification
 REVENUE_KEYWORDS = [
@@ -764,13 +763,27 @@ def _build_table_data(
     # Cap what we send so a huge dataset cannot blow up the payload; the
     # frontend shows the first 10 and lists the remainder in a dropdown.
     display_rows = subset_df.head(MAX_TABLE_ROWS).fillna("").to_dict(orient="records")
+    if datetime_col and datetime_col in table_columns:
+        for row in display_rows:
+            value = row.get(datetime_col)
+            parsed_value = pd.to_datetime(value, errors="coerce")
+            if pd.notna(parsed_value):
+                row[datetime_col] = parsed_value.strftime("%Y-%m-%d")
+
+    entity_label = "Records"
+    if datetime_col:
+        entity_label = "Activity"
+    elif any("order" in str(column).lower() for column in table_columns):
+        entity_label = "Orders"
 
     return {
         "columns": table_columns,
         "rows": display_rows,
         "preview_count": TABLE_PREVIEW_ROWS,
         "total_rows": len(df),
-        "title": "Recent Orders & Activity",
+        "title": f"Recent {entity_label}",
+        "row_count": len(df),
+        "column_count": len(table_columns),
     }
 
 

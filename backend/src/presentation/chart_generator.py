@@ -17,6 +17,51 @@ MAX_CHARTS = 12
 RANDOM_SAMPLE_SEED = 42
 
 
+def _valid_chart_spec(chart: Dict[str, Any]) -> bool:
+    """Reject chart specs whose metric or dimension has no usable data."""
+    figure_data = chart.get("figure", {}).get("data", [])
+    if not figure_data:
+        return False
+    trace = figure_data[0]
+    chart_type = chart.get("chart_type")
+    if chart_type == "pie":
+        labels = trace.get("labels", [])
+        values = pd.Series(pd.to_numeric(trace.get("values", []), errors="coerce"))
+        return len(set(labels)) >= 2 and int(values.notna().sum()) >= 2
+    metric = trace.get("y", [])
+    values = pd.Series(pd.to_numeric(metric, errors="coerce"))
+    dimension = trace.get("x", [])
+    return int(values.notna().sum()) >= 2 and len(set(dimension)) >= 2
+
+
+def _fallback_line_chart(df: pd.DataFrame) -> Dict[str, Any]:
+    """Create a non-empty line chart from the first usable numeric measure."""
+    for column in df.columns:
+        values = pd.to_numeric(df[column], errors="coerce")
+        valid = values.dropna()
+        if len(valid) < 2:
+            continue
+        valid = valid.head(MAX_SCATTER_POINTS)
+        figure = go.Figure(
+            data=[
+                go.Scatter(
+                    x=list(range(1, len(valid) + 1)),
+                    y=valid.round(2).tolist(),
+                    mode="lines+markers",
+                    name=str(column),
+                )
+            ]
+        )
+        return {
+            "chart_type": "line",
+            "title": f"{column} Trend",
+            "columns": [str(column)],
+            "figure": figure.to_dict(),
+            "layout_slot": "main",
+        }
+    return {}
+
+
 def _histogram_chart(df: pd.DataFrame, column: str) -> Dict[str, Any]:
     """Build a histogram chart config for a numeric column's distribution."""
     series = df[column].dropna()
@@ -467,7 +512,12 @@ def generate_ecommerce_charts(
         })
 
     # Ensure max 4 secondary charts
-    return {
+    result = {
         "main_chart": main_chart,
-        "secondary_charts": secondary_charts[:4],
+        "secondary_charts": [
+            chart for chart in secondary_charts[:4] if _valid_chart_spec(chart)
+        ],
     }
+    if not _valid_chart_spec(result["main_chart"]):
+        result["main_chart"] = _fallback_line_chart(df)
+    return result

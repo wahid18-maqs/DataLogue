@@ -84,29 +84,24 @@ export default function Sidebar({
     <div className="flex h-full flex-col justify-between p-4">
       {/* Top Header & Brand */}
       <div>
-        <div className="flex items-center justify-between pb-5 border-b border-slate-100">
-          <div className="flex items-center gap-2.5 overflow-hidden">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-on-accent shadow-sm font-bold text-base">
-              E2P
+        <div className={`flex pb-5 border-b border-slate-100 ${isCollapsed ? "justify-center" : "items-center justify-between"}`}>
+          {!isCollapsed && (
+            <div className="min-w-0 text-left">
+              <span className="block truncate text-sm font-bold tracking-tight text-slate-800">
+                Datalogue
+              </span>
+              <span className="block truncate text-[11px] font-medium text-slate-400">
+                Enterprise Analytics
+              </span>
             </div>
-            {!isCollapsed && (
-              <div className="truncate">
-                <span className="block text-sm font-bold tracking-tight text-slate-800">
-                  Datalogue
-                </span>
-                <span className="block text-[11px] font-medium text-slate-400">
-                  Enterprise Analytics
-                </span>
-              </div>
-            )}
-          </div>
+          )}
 
-          {/* Desktop collapse toggle button */}
+          {/* Desktop collapse/expand toggle button */}
           <button
             type="button"
             onClick={onToggleCollapse}
             title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className="hidden lg:flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+            className="hidden lg:flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
           >
             <svg
               className={`h-4 w-4 transition-transform ${isCollapsed ? "rotate-180" : ""}`}

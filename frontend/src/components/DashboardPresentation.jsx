@@ -21,6 +21,7 @@ import {
   generatePresentation,
   getErrorMessage,
   getPresentationJob,
+  getWorkbookPresentation,
 } from "../services/api";
 
 // How often the job status is polled while the deck is being built.
@@ -33,6 +34,7 @@ export default function DashboardPresentation({ dataset, settings = null }) {
   // A stable identity for the active dataset, so the panel resets whenever a
   // different dataset becomes active.
   const datasetKey = dataset?.stored_filename || dataset?.original_filename || "";
+  const workbookId = dataset?.workbook?.id || dataset?.workbook_id || "";
 
   const [deck, setDeck] = useState(null);
   const [presentation, setPresentation] = useState(null);
@@ -52,6 +54,7 @@ export default function DashboardPresentation({ dataset, settings = null }) {
   // user types what they want changed, and the agent rewrites the narrative.
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [suggestions, setSuggestions] = useState("");
+  const [feedbackHistory, setFeedbackHistory] = useState([]);
 
   // The live-edit flow: the toolbar button puts the slide itself into edit
   // mode, the requester rewrites the text on the slide, and the changes are
@@ -85,7 +88,31 @@ export default function DashboardPresentation({ dataset, settings = null }) {
     setSuggestions("");
     setIsEditing(false);
     setDraft(null);
-  }, [datasetKey]);
+    if (!workbookId) return undefined;
+    let cancelled = false;
+    getWorkbookPresentation(workbookId)
+      .then((result) => {
+        const saved = result?.presentation;
+        if (cancelled || !saved) return;
+        setPresentation({
+          filename: saved.filename,
+          download_url: saved.download_url,
+          deck: saved.deck,
+          stale: saved.stale,
+        });
+        setDeck(saved.deck || null);
+        setFeedbackHistory(saved.feedback || []);
+        if (saved.stale) {
+          setNotice("This presentation was generated from an older version of the workbook.");
+        }
+      })
+      .catch(() => {
+        // A missing saved deck is a normal first-use state.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetKey, workbookId]);
 
   /**
    * Poll a generation job until it completes.
@@ -164,6 +191,10 @@ export default function DashboardPresentation({ dataset, settings = null }) {
         deck: result.deck,
       });
       setDeck(result.deck || null);
+      setFeedbackHistory((current) => [
+        ...current,
+        { text, timestamp: new Date().toISOString() },
+      ]);
       setActiveIndex(0);
       setNotice(
         `Presentation ready — ${result.deck?.slide_count || 0} slides generated from ${datasetKey}.`
@@ -195,6 +226,10 @@ export default function DashboardPresentation({ dataset, settings = null }) {
         ...generationSettings,
         suggestions: text,
         currentDeck: deck,
+        feedbackHistory: [
+          ...feedbackHistory,
+          { text, timestamp: new Date().toISOString() },
+        ],
       });
       setCurrentStage(job.stage || FIRST_STAGE);
 
@@ -221,7 +256,15 @@ export default function DashboardPresentation({ dataset, settings = null }) {
     } finally {
       setIsGenerating(false);
     }
-  }, [datasetKey, hasDataset, pollUntilComplete, suggestions, generationSettings, deck]);
+  }, [
+    datasetKey,
+    hasDataset,
+    pollUntilComplete,
+    suggestions,
+    generationSettings,
+    deck,
+    feedbackHistory,
+  ]);
 
   /**
    * Put the slide into edit mode.

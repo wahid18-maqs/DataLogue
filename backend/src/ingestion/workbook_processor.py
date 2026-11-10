@@ -303,6 +303,14 @@ def _clean_frame(frame: pd.DataFrame) -> pd.DataFrame:
         str(column).strip() if isinstance(column, str) else column
         for column in cleaned.columns
     ]
+    cleaned = cleaned.loc[
+        :,
+        [
+            column
+            for column in cleaned.columns
+            if not str(column).strip().lower().startswith("unnamed:")
+        ],
+    ]
 
     # Two columns can end up with the same name after trimming.
     seen: Dict[str, int] = {}
@@ -707,7 +715,11 @@ def process_workbook(path: str) -> Dict[str, Any]:
         sheets.append(record)
         frames[sheet_id] = cleaned
 
-    usable = [sheet for sheet in sheets if sheet["status"] == "parsed"]
+    usable = [
+        sheet
+        for sheet in sheets
+        if sheet["status"] == "parsed" and sheet["sheet_class"] == "tabular"
+    ]
 
     if not usable:
         return {
@@ -729,7 +741,7 @@ def process_workbook(path: str) -> Dict[str, Any]:
         "frames": frames,
         "status": "partially_parsed" if has_skipped or has_errors else "parsed",
         "error_reason": "; ".join(errors) if errors else None,
-        # The first tabular sheet is the default one to work with.
-        "active_sheet_id": usable[0]["id"],
+        # The largest source table is the default dataset for consumers.
+        "active_sheet_id": max(usable, key=lambda sheet: sheet["row_count"])["id"],
         "processing_notice": processing_notice,
     }

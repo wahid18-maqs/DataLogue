@@ -28,26 +28,112 @@ class PresentationStore:
                 """
                 CREATE TABLE IF NOT EXISTS presentations (
                     filename TEXT PRIMARY KEY,
+                    workbook_id TEXT,
+                    sheet_id TEXT,
                     pptx_data BLOB NOT NULL,
                     plan_json TEXT NOT NULL,
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    feedback_json TEXT NOT NULL DEFAULT '[]',
+                    stale INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(presentations)")
+            }
+            for name, definition in (
+                ("workbook_id", "TEXT"),
+                ("sheet_id", "TEXT"),
+                ("settings_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("feedback_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("stale", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in columns:
+                    self._connection.execute(
+                        f"ALTER TABLE presentations ADD COLUMN {name} {definition}"
+                    )
             self._connection.commit()
 
-    def save(self, filename: str, pptx_data: bytes, plan: Dict[str, Any]) -> None:
+    def save(
+        self,
+        filename: str,
+        pptx_data: bytes,
+        plan: Dict[str, Any],
+        workbook_id: Optional[str] = None,
+        sheet_id: Optional[str] = None,
+        settings: Optional[Dict[str, Any]] = None,
+        feedback: Optional[list] = None,
+    ) -> None:
         """Insert or replace one generated presentation artifact."""
         with self._lock:
             self._connection.execute(
                 """
                 INSERT OR REPLACE INTO presentations
-                    (filename, pptx_data, plan_json, created_at)
-                VALUES (?, ?, ?, ?)
+                    (filename, workbook_id, sheet_id, pptx_data, plan_json,
+                     settings_json, feedback_json, stale, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                 """,
-                (filename, pptx_data, json.dumps(plan, default=str), _now()),
+                (
+                    filename,
+                    workbook_id,
+                    sheet_id,
+                    pptx_data,
+                    json.dumps(plan, default=str),
+                    json.dumps(settings or {}, default=str),
+                    json.dumps(feedback or [], default=str),
+                    _now(),
+                ),
             )
             self._connection.commit()
+
+    def get_for_workbook(self, workbook_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM presentations WHERE workbook_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (workbook_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return {
+                "filename": row["filename"],
+                "workbook_id": row["workbook_id"],
+                "sheet_id": row["sheet_id"],
+                "deck": json.loads(row["plan_json"]),
+                "settings": json.loads(row["settings_json"] or "{}"),
+                "feedback": json.loads(row["feedback_json"] or "[]"),
+                "stale": bool(row["stale"]),
+                "created_at": row["created_at"],
+            }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def mark_workbook_stale(self, workbook_id: str) -> None:
+        with self._lock:
+            self._connection.execute(
+                "UPDATE presentations SET stale = 1 WHERE workbook_id = ?",
+                (workbook_id,),
+            )
+            self._connection.commit()
+
+    def update_feedback(self, filename: str, feedback: list) -> None:
+        with self._lock:
+            self._connection.execute(
+                "UPDATE presentations SET feedback_json = ? WHERE filename = ?",
+                (json.dumps(feedback, default=str), filename),
+            )
+            self._connection.commit()
+
+    def get_workbook_id_for_filename(self, filename: str) -> Optional[str]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT workbook_id FROM presentations WHERE filename = ?",
+                (filename,),
+            ).fetchone()
+        return None if row is None else row["workbook_id"]
 
     def get_pptx(self, filename: str) -> Optional[bytes]:
         """Return the rendered PPTX bytes for a filename."""

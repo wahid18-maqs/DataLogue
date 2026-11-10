@@ -201,7 +201,7 @@ def generate_ecommerce_kpis(
             "type": "count"
         })
         quick_stats.append({
-            "label": f"Customers",
+            "label": f"{_plural_label(cust_col)}",
             "value": f"{n_cust:,}",
             "numeric_value": n_cust,
         })

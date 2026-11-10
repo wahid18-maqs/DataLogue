@@ -1,170 +1,164 @@
-// Bottom Recent Orders / Latest Reviews table:
-// - Title "Latest reviews" or "Latest orders" based on backend metadata
-// - The first 10 records are shown inline; the rest are listed in a dropdown
-// - Clean responsive table with horizontal scrolling on small screens
-// - Dynamically renders returned columns without hardcoding ecommerce names
-// - Status and currency styling heuristics
+// Dynamic activity table with consistent columns, formatting, and pagination.
 
 import { useMemo, useState } from "react";
 
-const PREVIEW_ROWS = 10;
+const PAGE_OPTIONS = [10, 25, 50];
 
-function formatCell(val) {
-  if (val === null || val === undefined || val === "") return "—";
-  if (typeof val === "number") {
-    return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(2);
-  }
-  return String(val);
+function isDateColumn(column, value) {
+  const name = column.toLowerCase();
+  return (
+    name.includes("date") ||
+    name.includes("time") ||
+    (typeof value === "string" && /^\d{4}-\d{2}-\d{2}(?:[t ]|$)/i.test(value))
+  );
+}
+
+function isNumericColumn(column, rows) {
+  const values = rows
+    .map((row) => row[column])
+    .filter((value) => value !== null && value !== undefined && value !== "");
+  if (!values.length) return false;
+  return values.every((value) => typeof value === "number" || (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value.replace(/,/g, "")))));
+}
+
+function isCurrencyColumn(column) {
+  return /(?:[$€£₹]|amount|revenue|sales|price|cost|profit|value|total)/i.test(column);
+}
+
+function formatDate(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function formatCell(value, column, numeric, currency) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (isDateColumn(column, value)) return formatDate(value);
+  if (!numeric) return String(value);
+
+  const number = Number(String(value).replace(/,/g, ""));
+  if (!Number.isFinite(number)) return String(value);
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: currency || !Number.isInteger(number) ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(number);
 }
 
 function StatusPill({ value }) {
-  const str = String(value).toLowerCase();
-  let color = "bg-slate-100 text-slate-700 border-slate-200";
+  const text = String(value);
+  const normalized = text.toLowerCase();
+  const tone = ["delivered", "completed", "paid", "success", "active", "approved"].some((item) => normalized.includes(item))
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : ["pending", "processing", "in progress", "hold"].some((item) => normalized.includes(item))
+      ? "border-amber-200 bg-amber-50 text-amber-700"
+      : ["cancelled", "refunded", "failed", "returned", "rejected"].some((item) => normalized.includes(item))
+        ? "border-rose-200 bg-rose-50 text-rose-700"
+        : "border-slate-200 bg-fill text-text-secondary";
 
-  if (["delivered", "completed", "paid", "success", "active", "approved"].some((s) => str.includes(s))) {
-    color = "bg-emerald-50 text-emerald-700 border-emerald-200";
-  } else if (["pending", "processing", "in progress", "hold"].some((s) => str.includes(s))) {
-    color = "bg-amber-50 text-amber-700 border-amber-200";
-  } else if (["cancelled", "refunded", "failed", "returned", "rejected"].some((s) => str.includes(s))) {
-    color = "bg-rose-50 text-rose-700 border-rose-200";
-  }
-
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${color}`}>
-      {value}
-    </span>
-  );
-}
-
-/**
- * One extra record, rendered as a compact row for the dropdown list.
- *
- * Only the columns that identify the record are shown — an order id, a
- * customer, a date — so the list stays readable next to the wide table.
- */
-function DropdownRow({ row, columns }) {
-  const labelColumns = useMemo(() => {
-    const preferred = columns.filter((col) => {
-      const lower = col.toLowerCase();
-      return (
-        lower.includes("id") ||
-        lower.includes("name") ||
-        lower.includes("date") ||
-        lower.includes("time") ||
-        lower.includes("status") ||
-        lower.includes("amount") ||
-        lower.includes("total") ||
-        lower.includes("sales")
-      );
-    });
-    return (preferred.length ? preferred : columns).slice(0, 4);
-  }, [columns]);
-
-  return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-xs text-slate-700 transition-colors hover:bg-slate-50">
-      {labelColumns.map((col) => (
-        <span key={col} className="flex items-center gap-1.5">
-          <span className="font-medium text-slate-400">{col.replace(/_/g, " ")}</span>
-          <span className="font-semibold text-slate-700">{formatCell(row[col])}</span>
-        </span>
-      ))}
-    </li>
-  );
+  return <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${tone}`}>{text}</span>;
 }
 
 export default function LatestReviews({ table }) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState(null);
 
-  const { title = "Latest Orders & Activity", columns = [], rows = [], total_rows } = table || {};
+  const { title = "Recent Activity", columns = [], rows = [], total_rows = rows.length } = table || {};
+  const columnInfo = useMemo(
+    () => columns.map((column) => ({
+      name: column,
+      numeric: isNumericColumn(column, rows),
+      currency: isCurrencyColumn(column),
+      status: /status|state|stage/i.test(column),
+    })),
+    [columns, rows]
+  );
 
-  const previewRows = useMemo(() => rows.slice(0, PREVIEW_ROWS), [rows]);
-  const extraRows = useMemo(() => rows.slice(PREVIEW_ROWS), [rows]);
+  const sortedRows = useMemo(() => {
+    if (!sort) return rows;
+    const info = columnInfo.find((item) => item.name === sort.column);
+    return [...rows].sort((left, right) => {
+      const a = left[sort.column];
+      const b = right[sort.column];
+      if (info?.numeric) return (Number(a) || 0) - (Number(b) || 0) || (sort.direction === "asc" ? 1 : -1);
+      return String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true }) * (sort.direction === "asc" ? 1 : -1);
+    });
+  }, [rows, sort, columnInfo]);
 
-  if (!table || !columns || columns.length === 0) {
-    return null;
-  }
+  const pageCount = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = sortedRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const start = sortedRows.length ? (safePage - 1) * pageSize + 1 : 0;
+  const end = Math.min(safePage * pageSize, sortedRows.length);
 
-  // Determine if a column represents a status or category pill
-  const isStatusColumn = (col) => {
-    const lower = col.toLowerCase();
-    return lower.includes("status") || lower.includes("state") || lower.includes("stage");
+  if (!table || !columns.length) return null;
+
+  const handleSort = (column) => {
+    setPage(1);
+    setSort((current) => current?.column === column
+      ? { column, direction: current.direction === "asc" ? "desc" : "asc" }
+      : { column, direction: "asc" });
   };
 
   return (
     <section className="rounded-xl border border-slate-200/80 bg-surface p-5 shadow-sm">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-base font-bold tracking-tight text-slate-900">{title}</h2>
-          <p className="text-xs text-slate-500">
-            Showing latest {previewRows.length} records{" "}
-            {total_rows ? `out of ${total_rows.toLocaleString()} total entries` : ""}
+          <h2 className="text-base font-bold tracking-tight text-text-primary">{title}</h2>
+          <p className="text-xs text-text-secondary">
+            Showing {start.toLocaleString()}-{end.toLocaleString()} of {Number(total_rows).toLocaleString()}
           </p>
         </div>
-
-        {extraRows.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setIsOpen((open) => !open)}
-            aria-expanded={isOpen}
-            className="inline-flex items-center gap-1.5 self-start rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 sm:self-auto"
+        <label className="flex items-center gap-2 text-xs text-text-secondary">
+          Rows per page
+          <select
+            value={pageSize}
+            onChange={(event) => {
+              setPageSize(Number(event.target.value));
+              setPage(1);
+            }}
+            className="rounded-lg border border-slate-200 bg-surface px-2 py-1.5 text-text-primary"
           >
-            <svg
-              className={`h-3.5 w-3.5 transition-transform ${isOpen ? "rotate-180" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M19 9l-7 7-7-7" />
-            </svg>
-            {isOpen ? "Hide" : "Show"} next {extraRows.length}
-          </button>
-        )}
+            {PAGE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+        </label>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200">
-        <table className="w-full text-left text-xs">
-          <thead className="border-b border-slate-200 bg-slate-50/75 text-slate-600">
+      <div className={`max-w-full overflow-x-auto rounded-lg border border-slate-200 ${pageSize > 25 ? "max-h-[34rem] overflow-y-auto" : ""}`}>
+        <table className="w-max min-w-full table-auto text-left text-xs">
+          <thead className="sticky top-0 z-10 border-b border-slate-200 bg-surface text-text-secondary">
             <tr>
-              {columns.map((col) => (
-                <th key={col} className="whitespace-nowrap px-4 py-3 font-semibold">
-                  {col.replace(/_/g, " ")}
+              {columnInfo.map((info) => (
+                <th key={info.name} className={`whitespace-nowrap px-3 py-3 font-semibold ${info.numeric ? "text-right" : ""}`}>
+                  <button type="button" onClick={() => handleSort(info.name)} className="inline-flex items-center gap-1 hover:text-text-primary">
+                    {info.name.replace(/_/g, " ")}
+                    {sort?.column === info.name && (sort.direction === "asc" ? "↑" : "↓")}
+                  </button>
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 text-slate-700">
-            {previewRows.map((row, idx) => (
-              <tr key={idx} className="transition-colors hover:bg-slate-50/50">
-                {columns.map((col) => {
-                  const cellVal = row[col];
-                  return (
-                    <td key={col} className="whitespace-nowrap px-4 py-3">
-                      {isStatusColumn(col) ? (
-                        <StatusPill value={cellVal} />
-                      ) : (
-                        <span className="font-normal">{formatCell(cellVal)}</span>
-                      )}
-                    </td>
-                  );
-                })}
+          <tbody className="divide-y divide-slate-200 text-text-primary">
+            {pageRows.map((row, index) => (
+              <tr key={`${safePage}-${index}`} className="transition-colors odd:bg-fill/30 hover:bg-slate-50/60">
+                {columnInfo.map((info) => (
+                  <td key={info.name} className={`whitespace-nowrap px-3 py-3 ${info.numeric ? "text-right tabular-nums" : ""}`}>
+                    {info.status ? <StatusPill value={row[info.name]} /> : formatCell(row[info.name], info.name, info.numeric, info.currency)}
+                  </td>
+                ))}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {extraRows.length > 0 && isOpen && (
-        <div className="mt-3 overflow-hidden rounded-lg border border-slate-200">
-          <div className="border-b border-slate-200 bg-slate-50/75 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-            Next {extraRows.length} entries
-          </div>
-          <ul className="divide-y divide-slate-100 bg-surface">
-            {extraRows.map((row, idx) => (
-              <DropdownRow key={idx} row={row} columns={columns} />
-            ))}
-          </ul>
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-text-secondary">
+        <span>Page {safePage} of {pageCount}</span>
+        <div className="flex gap-2">
+          <button type="button" disabled={safePage === 1} onClick={() => setPage((value) => value - 1)} className="rounded-lg border border-slate-200 bg-surface px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+          <button type="button" disabled={safePage === pageCount} onClick={() => setPage((value) => value + 1)} className="rounded-lg border border-slate-200 bg-surface px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-40">Next</button>
         </div>
-      )}
+      </div>
     </section>
   );
 }

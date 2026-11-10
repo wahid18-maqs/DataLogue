@@ -244,6 +244,7 @@ export async function generatePresentation({
   detailLevel,
   aiNarrative,
   currentDeck,
+  feedbackHistory,
 } = {}) {
   const formData = new FormData();
 
@@ -260,6 +261,7 @@ export async function generatePresentation({
     formData.append("theme", theme);
   }
   if (detailLevel) {
+    formData.append("slide_detail_level", detailLevel);
     formData.append("detail_level", detailLevel);
   }
   if (aiNarrative !== undefined && aiNarrative !== null) {
@@ -267,6 +269,9 @@ export async function generatePresentation({
   }
   if (currentDeck) {
     formData.append("current_deck", JSON.stringify(currentDeck));
+  }
+  if (feedbackHistory) {
+    formData.append("feedback_history", JSON.stringify(feedbackHistory));
   }
 
   const response = await client.post("/presentations/generate", formData);
@@ -277,6 +282,12 @@ export async function generatePresentation({
 /** Fetch the current progress of a presentation generation job. */
 export async function getPresentationJob(jobId) {
   const response = await client.get(`/presentations/jobs/${jobId}`);
+  return response.data;
+}
+
+/** Load the latest durable presentation associated with a workbook. */
+export async function getWorkbookPresentation(workbookId) {
+  const response = await client.get(`/workbooks/${workbookId}/presentation`);
   return response.data;
 }
 

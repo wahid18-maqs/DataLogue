@@ -31,8 +31,13 @@ CREATE INDEX IF NOT EXISTS workbooks_db.idx_workbooks_uploaded_at
 
 CREATE TABLE IF NOT EXISTS presentations_db.presentations (
     filename   TEXT PRIMARY KEY,
+    workbook_id TEXT,
+    sheet_id   TEXT,
     pptx_data  BLOB NOT NULL,
     plan_json  TEXT NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    feedback_json TEXT NOT NULL DEFAULT '[]',
+    stale INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 

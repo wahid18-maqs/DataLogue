@@ -92,7 +92,13 @@ app.state.presentations = None
 
 
 def _store_rendered_presentation(
-    output_path: Path, filename: str, plan: dict
+    output_path: Path,
+    filename: str,
+    plan: dict,
+    workbook_id: Optional[str] = None,
+    sheet_id: Optional[str] = None,
+    settings: Optional[dict] = None,
+    feedback: Optional[list] = None,
 ) -> None:
     """Persist a rendered temporary PPTX and its plan in presentations.db."""
     if app.state.presentations is None:
@@ -101,7 +107,15 @@ def _store_rendered_presentation(
         if imported:
             logger.info("Imported %d legacy presentation artifact(s) into the database.", imported)
     try:
-        app.state.presentations.save(filename, output_path.read_bytes(), plan)
+        app.state.presentations.save(
+            filename,
+            output_path.read_bytes(),
+            plan,
+            workbook_id=workbook_id,
+            sheet_id=sheet_id,
+            settings=settings,
+            feedback=feedback,
+        )
     finally:
         output_path.unlink(missing_ok=True)
         output_path.with_suffix(".plan.json").unlink(missing_ok=True)
@@ -119,6 +133,7 @@ class PresentationJob:
         self.filename: Optional[str] = None
         self.download_url: Optional[str] = None
         self.deck: Optional[dict] = None
+        self.requested_detail_level: Optional[str] = None
         # The plan as it was first generated. Live edits are always applied to
         # this baseline, so a client that sends the same edit twice gets the
         # same result.
@@ -145,6 +160,8 @@ class PresentationJob:
             "filename": self.filename,
             "download_url": self.download_url,
             "deck": self.deck,
+            "requested_detail_level": self.requested_detail_level,
+            "actual_slide_count": (self.deck or {}).get("slide_count"),
             "stage_history": list(self.stage_history),
         }
 
@@ -222,8 +239,26 @@ def _get_workbook_query_frame(
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
+def _get_primary_workbook_frame(workbook_id: str) -> pd.DataFrame:
+    """Return one largest parsed tabular sheet for dashboard-style consumers."""
+    workbook = app.state.workbooks.get(workbook_id)
+    if workbook is None:
+        raise WorkbookNotFound(f"No workbook with id '{workbook_id}'.")
+    candidates = [
+        sheet
+        for sheet in workbook.get("sheets", [])
+        if sheet.get("status") == "parsed" and sheet.get("sheet_class") == "tabular"
+    ]
+    if not candidates:
+        raise ValueError("This workbook has no parsed tabular sheet to display.")
+    active_id = workbook.get("active_sheet_id")
+    selected = next((sheet for sheet in candidates if sheet["id"] == active_id), None)
+    selected = selected or max(candidates, key=lambda sheet: sheet.get("row_count", 0))
+    return app.state.workbooks.get_frame(workbook_id, selected["id"])
+
+
 def _get_current_dashboard_dataframe() -> pd.DataFrame:
-    """Return all parsed sheets for dashboard-wide workbook rendering."""
+    """Return the primary tabular sheet for dashboard rendering."""
     if app.state.workbooks is not None:
         workbook_id = app.state.current_workbook_id
         if workbook_id and app.state.workbooks.get(workbook_id) is None:
@@ -241,7 +276,7 @@ def _get_current_dashboard_dataframe() -> pd.DataFrame:
                 workbook_id = stored["id"]
                 app.state.current_workbook_id = workbook_id
         if workbook_id:
-            return _get_workbook_query_frame(workbook_id, include_source_sheet=False)
+            return _get_primary_workbook_frame(workbook_id)
     return _get_current_dataframe()
 
 
@@ -438,8 +473,10 @@ async def generate_presentation_endpoint(
     suggestions: Optional[str] = Form(None),
     theme: Optional[str] = Form(None),
     detail_level: Optional[str] = Form(None),
+    slide_detail_level: Optional[str] = Form(None),
     ai_narrative: Optional[bool] = Form(None),
     current_deck: Optional[str] = Form(None),
+    feedback_history: Optional[str] = Form(None),
 ) -> dict:
     """
     Start generation of an editable PowerPoint presentation (.pptx).
@@ -475,6 +512,14 @@ async def generate_presentation_endpoint(
     # prompt, so the length is bounded and the text is trimmed.
     suggestions = (suggestions or "").strip()[:MAX_SUGGESTION_CHARS] or None
     current_plan = None
+    parsed_feedback: list = []
+    if feedback_history:
+        try:
+            value = json.loads(feedback_history)
+            if isinstance(value, list):
+                parsed_feedback = value[-50:]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=400, detail="feedback_history must be valid JSON.")
     if current_deck:
         try:
             parsed_deck = json.loads(current_deck)
@@ -487,11 +532,12 @@ async def generate_presentation_endpoint(
     # unknown theme or detail level falls back to the default rather than
     # failing the request.
     theme_name = normalize_theme(theme)
-    detail_level_name = normalize_detail_level(detail_level)
+    detail_level_name = normalize_detail_level(slide_detail_level or detail_level)
     use_agent = True if ai_narrative is None else bool(ai_narrative)
 
     dataframe: Optional[pd.DataFrame] = None
     source_name = "dataset"
+    presentation_workbook_id: Optional[str] = None
 
     # Case 1: Direct file upload provided in request
     if file is not None and file.filename:
@@ -539,6 +585,7 @@ async def generate_presentation_endpoint(
                     file_data=contents,
                 )
                 app.state.current_workbook_id = record["id"]
+                presentation_workbook_id = record["id"]
             except Exception:
                 logger.exception("Failed to register direct presentation upload '%s'.", safe_name)
                 raise HTTPException(
@@ -551,6 +598,7 @@ async def generate_presentation_endpoint(
         workbook = app.state.workbook_store.get_workbook(dataset_id)
         if workbook is None:
             raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
+        presentation_workbook_id = dataset_id
         try:
             with tempfile.NamedTemporaryFile(suffix=Path(workbook["file_name"]).suffix) as temporary:
                 temporary.write(workbook["file_data"] or b"")
@@ -564,6 +612,7 @@ async def generate_presentation_endpoint(
     else:
         dataframe = _get_current_dataframe()
         source_name = Path(app.state.current_filename or "dataset").stem
+        presentation_workbook_id = app.state.current_workbook_id
 
     if dataframe is None or dataframe.empty:
         raise HTTPException(status_code=400, detail="Cannot generate presentation: dataset is empty.")
@@ -573,6 +622,7 @@ async def generate_presentation_endpoint(
     output_path = Path(tempfile.mktemp(suffix=".pptx"))
 
     job = PresentationJob(uuid.uuid4().hex)
+    job.requested_detail_level = detail_level_name
     app.state.presentation_jobs[job.job_id] = job
     job.update("reading_spreadsheet", "Reading spreadsheet")
 
@@ -589,7 +639,18 @@ async def generate_presentation_endpoint(
                 detail_level=detail_level_name,
                 current_plan=current_plan,
             )
-            _store_rendered_presentation(output_path, presentation_filename, deck_plan)
+            _store_rendered_presentation(
+                output_path,
+                presentation_filename,
+                deck_plan,
+                workbook_id=presentation_workbook_id,
+                settings={
+                    "theme": theme_name,
+                    "detail_level": detail_level_name,
+                    "ai_narrative": use_agent,
+                },
+                feedback=parsed_feedback,
+            )
             job.deck = deck_plan
             job.base_deck = deck_plan
             job.filename = presentation_filename
@@ -611,6 +672,8 @@ async def generate_presentation_endpoint(
         "stage": job.stage,
         "message": job.message,
         "stages": GENERATION_STAGES,
+        "requested_detail_level": detail_level_name,
+        "actual_slide_count": None,
     }
 
 
@@ -717,7 +780,23 @@ def _apply_edits_to_deck(
 
     try:
         render_plan_to_pptx(edited_plan, output_path)
-        _store_rendered_presentation(output_path, edited_filename, edited_plan)
+        workbook_id = (
+            app.state.presentations.get_workbook_id_for_filename(filename)
+            if app.state.presentations
+            else None
+        )
+        existing = (
+            app.state.presentations.get_for_workbook(workbook_id)
+            if workbook_id and app.state.presentations
+            else None
+        )
+        _store_rendered_presentation(
+            output_path,
+            edited_filename,
+            edited_plan,
+            workbook_id=workbook_id,
+            feedback=existing.get("feedback", []) if existing else [],
+        )
     except Exception as exc:  # noqa: BLE001 - surfaced to the client
         logger.exception("Failed to render the edited presentation: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to render the edited presentation.") from exc
@@ -736,6 +815,23 @@ def _apply_edits_to_deck(
         "applied": applied,
         "rejected": rejected,
     }
+
+
+@app.get("/workbooks/{workbook_id}/presentation")
+def get_workbook_presentation(workbook_id: str) -> dict:
+    """Return the latest durable deck for a workbook, if one exists."""
+    service = _workbook_service()
+    try:
+        service.get(workbook_id)
+    except WorkbookNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if app.state.presentations is None:
+        app.state.presentations = PresentationStore(PRESENTATIONS_DB_PATH)
+    record = app.state.presentations.get_for_workbook(workbook_id)
+    if record is None:
+        return {"presentation": None}
+    record["download_url"] = f"/presentations/download/{record['filename']}"
+    return {"presentation": record}
 
 
 @app.get("/presentations/download/{filename}")
@@ -834,6 +930,7 @@ class WorkbookGenerateRequest(BaseModel):
     # The generation settings, passed in from the requester's Settings.
     theme: Optional[str] = None
     detail_level: Optional[str] = None
+    slide_detail_level: Optional[str] = None
     ai_narrative: Optional[bool] = None
     current_deck: Optional[dict] = None
 
@@ -1040,6 +1137,8 @@ async def replace_workbook(
         file_type=Path(safe_filename).suffix.lower().lstrip("."),
         file_data=contents,
     )
+    if app.state.presentations is not None:
+        app.state.presentations.mark_workbook_stale(workbook_id)
 
     return {"workbook": service.get(workbook["id"])}
 
@@ -1160,8 +1259,9 @@ def generate_from_workbook(workbook_id: str, request: WorkbookGenerateRequest) -
 
     # The generation settings come from the requester's Settings.
     theme_name = normalize_theme(request.theme)
-    detail_level_name = normalize_detail_level(request.detail_level)
+    detail_level_name = normalize_detail_level(request.slide_detail_level or request.detail_level)
     use_agent = True if request.ai_narrative is None else bool(request.ai_narrative)
+    job.requested_detail_level = detail_level_name
 
     def _run() -> None:
         """Generate the deck off the request thread, recording real progress."""
@@ -1176,7 +1276,18 @@ def generate_from_workbook(workbook_id: str, request: WorkbookGenerateRequest) -
                 detail_level=detail_level_name,
                 current_plan=request.current_deck,
             )
-            _store_rendered_presentation(output_path, presentation_filename, deck_plan)
+            _store_rendered_presentation(
+                output_path,
+                presentation_filename,
+                deck_plan,
+                workbook_id=workbook_id,
+                sheet_id=request.sheet_id,
+                settings={
+                    "theme": theme_name,
+                    "detail_level": detail_level_name,
+                    "ai_narrative": use_agent,
+                },
+            )
             job.deck = deck_plan
             job.base_deck = deck_plan
             job.filename = presentation_filename
@@ -1199,4 +1310,6 @@ def generate_from_workbook(workbook_id: str, request: WorkbookGenerateRequest) -
         "status": job.status,
         "stage": job.stage,
         "stages": list(GENERATION_STAGES),
+        "requested_detail_level": detail_level_name,
+        "actual_slide_count": None,
     }

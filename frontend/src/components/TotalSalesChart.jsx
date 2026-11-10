@@ -109,14 +109,14 @@ export default function TotalSalesChart({ chart }) {
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-bold tracking-tight text-slate-800">
-                Total sells
+                {chartTitle || "Trend"}
               </h2>
               <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
                 {chartTitle}
               </span>
             </div>
             <p className="mt-0.5 text-xs text-slate-500">
-              Payment & transaction volume over time
+              {chartTitle ? `${chartTitle} over time` : "Metric trend over time"}
             </p>
           </div>
 

@@ -701,6 +701,110 @@ def apply_detail_level(plan: Dict[str, Any], detail_level: Optional[str]) -> Dic
     return plan
 
 
+def _detailed_data_slides(
+    df: pd.DataFrame,
+    schema: Dict[str, Any],
+    key_roles: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build additional grounded slides for the detailed report level."""
+    metric = key_roles.get("revenue") or key_roles.get("order_metric")
+    if not metric or metric not in df.columns:
+        return []
+    numeric = pd.to_numeric(df[metric], errors="coerce")
+    slides: List[Dict[str, Any]] = []
+
+    categorical = [
+        column for column in schema.get("categorical_columns", [])
+        if column in df.columns
+        and 2 <= df[column].dropna().nunique() <= 12
+        and not str(column).lower().startswith("unnamed")
+    ]
+    for column in categorical:
+        grouped = (
+            pd.DataFrame({"group": df[column], "value": numeric})
+            .dropna()
+            .groupby("group")["value"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        if len(grouped) < 2:
+            continue
+        slides.append({
+            "type": "chart",
+            "category": "Detailed Breakdown",
+            "title": f"{metric} by {column}",
+            "chart_type": "column",
+            "categories": [str(value) for value in grouped.index[:8]],
+            "series": [{
+                "name": str(metric),
+                "values": [float(round(value, 2)) for value in grouped.values[:8]],
+            }],
+            "legend": False,
+            "source_id": f"detailed-breakdown-{column}",
+        })
+
+    valid = pd.DataFrame({"row": range(len(df)), "value": numeric}).dropna()
+    if len(valid) >= 2:
+        top = valid.nlargest(min(5, len(valid)), "value")["value"].tolist()
+        bottom = valid.nsmallest(min(5, len(valid)), "value")["value"].tolist()
+        slides.append({
+            "type": "insights",
+            "category": "Detailed Performance",
+            "title": f"Top and Bottom {metric} Performers",
+            "insights": [
+                f"Top values: {', '.join(f'{value:,.2f}' for value in top)}.",
+                f"Bottom values: {', '.join(f'{value:,.2f}' for value in bottom)}.",
+            ],
+            "recommendations": [],
+            "source_id": "detailed-top-bottom",
+        })
+        slides.append({
+            "type": "insights",
+            "category": "Detailed Comparison",
+            "title": f"{metric} Comparison Table",
+            "insights": [
+                f"Maximum: {numeric.max():,.2f}",
+                f"Median: {numeric.median():,.2f}",
+                f"Minimum: {numeric.min():,.2f}",
+                f"Range: {(numeric.max() - numeric.min()):,.2f}",
+            ],
+            "recommendations": [],
+            "source_id": "detailed-comparison",
+        })
+
+    missing = int(df.isna().sum().sum())
+    slides.append({
+        "type": "insights",
+        "category": "Data Quality",
+        "title": "Data Quality Notes",
+        "insights": [
+            f"{len(df):,} rows and {len(df.columns):,} columns were analyzed.",
+            f"{missing:,} missing cell values were detected.",
+            f"{len(schema.get('numeric_columns', []))} numeric and {len(schema.get('categorical_columns', []))} categorical columns were profiled.",
+        ],
+        "recommendations": [],
+        "source_id": "detailed-data-quality",
+    })
+    return slides
+
+
+def _apply_slide_budget(
+    slides: List[Dict[str, Any]],
+    df: pd.DataFrame,
+    schema: Dict[str, Any],
+    key_roles: Dict[str, Any],
+    detail_level: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Apply the requested slide-count budget after all planning paths."""
+    level = normalize_detail_level(detail_level)
+    if level == "concise":
+        return slides[:4]
+    if level == "detailed":
+        slides.extend(_detailed_data_slides(df, schema, key_roles))
+        return slides[:14]
+    return slides[:8]
+
+
 def build_deck_plan(
     df: pd.DataFrame,
     progress: Optional[ProgressCallback] = None,
@@ -834,6 +938,10 @@ def build_deck_plan(
                     })
             for index, slide in enumerate(slides, start=1):
                 slide["index"] = index
+
+    slides = _apply_slide_budget(slides, df, schema, key_roles, detail_level)
+    for index, slide in enumerate(slides, start=1):
+        slide["index"] = index
 
     deck_title = slides[0]["title"] if slides else "Business Performance Report"
 
@@ -1512,6 +1620,11 @@ def render_plan_to_pptx(plan: Dict[str, Any], output_path: Union[str, Path]) -> 
     path.parent.mkdir(parents=True, exist_ok=True)
 
     prs = Presentation()
+    prs.core_properties.title = "Datalogue Analytics Report"
+    prs.core_properties.subject = "Data analysis and business insights"
+    prs.core_properties.author = "Datalogue"
+    prs.core_properties.last_modified_by = "Datalogue"
+    prs.core_properties.keywords = "Datalogue, analytics, data"
     prs.slide_width = SLIDE_WIDTH_EMU
     prs.slide_height = SLIDE_HEIGHT_EMU
     render_deck(prs, plan)
@@ -1616,6 +1729,11 @@ def generate_presentation_with_plan(
 
     report("preparing_powerpoint", "Preparing PowerPoint")
     prs = Presentation()
+    prs.core_properties.title = "Datalogue Analytics Report"
+    prs.core_properties.subject = "Data analysis and business insights"
+    prs.core_properties.author = "Datalogue"
+    prs.core_properties.last_modified_by = "Datalogue"
+    prs.core_properties.keywords = "Datalogue, analytics, data"
     prs.slide_width = SLIDE_WIDTH_EMU
     prs.slide_height = SLIDE_HEIGHT_EMU
     render_deck(prs, plan)
