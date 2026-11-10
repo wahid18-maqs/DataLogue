@@ -21,6 +21,9 @@ narrative, with deterministic templates available as a fallback.
 - Report `parsed`, `partially_parsed`, and `needs_attention` workbook states.
 - Recalculate spreadsheet formulas when LibreOffice is available.
 - Display KPIs, charts, summaries, and recent records in the dashboard.
+- Render the Recent Activity table with consistent columns, sorting, page sizes
+  of 10/25/50 rows, pagination, sticky headers, and dynamic number/date
+  formatting.
 - Ask natural-language questions about an uploaded workbook.
 - Generate editable PowerPoint decks with:
   - AI-assisted narrative
@@ -31,6 +34,11 @@ narrative, with deterministic templates available as a fallback.
 - Regenerate decks from conversational feedback.
 - Add, remove, reorder, and revise slides through regeneration prompts.
 - Edit supported slide text directly before exporting.
+- Persist generated decks by workbook, including the selected sheet, generation
+  settings, feedback history, timestamps, and stale status when workbook data
+  is replaced.
+- Restore the saved deck and regeneration history when returning to the
+  Overview dashboard.
 - Persist uploaded file records in `data/uploads/uploads.db`.
 - Persist workbook metadata and source bytes in `data/workbooks/workbooks.db`.
 - Persist generated PowerPoint files and plans in
