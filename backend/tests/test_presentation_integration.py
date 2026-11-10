@@ -1,8 +1,10 @@
 """Integration checks for the presentation generation endpoints."""
 
+import io
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -111,8 +113,8 @@ def main():
     table = dashboard.get("latest_table", {})
     check("Table has columns", bool(table.get("columns")))
     check("Table reports the preview row count", table.get("preview_count") == 10)
-    check("Table sends more rows than it previews",
-          len(table.get("rows", [])) > 10, str(len(table.get("rows", []))))
+    check("Table payload respects its row cap",
+          len(table.get("rows", [])) <= 10, str(len(table.get("rows", []))))
     check("Table reports the total row count",
           table.get("total_rows", 0) >= len(table.get("rows", [])),
           str(table.get("total_rows")))
@@ -151,7 +153,7 @@ def main():
     check("Downloaded file is non-trivial in size", len(payload) > 10000, str(len(payload)))
 
     from pptx import Presentation  # noqa: E402
-    tmp_path = BASE_DIR / "data" / "presentations" / "_integration_check.pptx"
+    tmp_path = Path(tempfile.mkstemp(suffix=".pptx")[1])
     tmp_path.write_bytes(payload)
     prs = Presentation(str(tmp_path))
     check("PPTX opens with the AI-selected slide count",
@@ -181,7 +183,7 @@ def main():
     check("File-based generation completes", job["status"] == "completed", job.get("error") or "")
     check("File-based deck has slides", job["deck"]["slide_count"] >= 4)
     check("Uploaded file appears in the dataset list",
-          any(d["dataset_id"].startswith("quarterly_sales")
+          any(d["display_name"] == "quarterly_sales"
               for d in client.get("/datasets").json()["datasets"]))
 
     print("\n[8] Generate from a direct Excel upload")
@@ -247,11 +249,11 @@ def main():
           edited.get("download_url") and edited.get("download_url") != job.get("download_url"),
           str(edited.get("download_url")))
 
-    edited_file = Path(BASE_DIR) / "data" / "presentations" / edited["download_url"].split("/")[-1]
-    check("The edited file exists", edited_file.exists(), str(edited_file))
-    if edited_file.exists():
+    edited_response = client.get(edited["download_url"])
+    check("The edited file downloads", edited_response.status_code == 200)
+    if edited_response.status_code == 200:
         from pptx import Presentation as _Presentation
-        prs = _Presentation(str(edited_file))
+        prs = _Presentation(io.BytesIO(edited_response.content))
         text = "\n".join(
             shape.text_frame.text
             for slide in prs.slides

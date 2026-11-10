@@ -12,6 +12,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
+from plotly.utils import PlotlyJSONEncoder
 
 from src.presentation.chart_generator import generate_charts
 from src.ingestion.csv_loader import CorruptedCSVError, EmptyCSVError, load_csv
@@ -36,7 +37,7 @@ from src.core.utils import (
     validate_csv_extension,
 )
 from src.workbook.workbook_cache import WorkbookCache
-from src.ingestion.workbook_processor import SheetError
+from src.ingestion.workbook_processor import SheetError, process_workbook
 from src.workbook.workbook_service import WorkbookNotFound, WorkbookService
 from src.workbook.workbook_store import WorkbookStore
 from src.presentation.presentation_store import PresentationStore
@@ -76,6 +77,7 @@ app.add_middleware(
 # A single-dataset session is sufficient for this assessment's scope.
 app.state.current_dataframe = None
 app.state.current_filename = None
+app.state.current_workbook_id = None
 
 # In-memory registry of presentation generation jobs, used to report genuine
 # pipeline progress to the client while a deck is being built.
@@ -198,6 +200,56 @@ def _get_current_dataframe() -> pd.DataFrame:
     return dataframe
 
 
+def _get_workbook_query_frame(
+    workbook_id: str, include_source_sheet: bool = True
+) -> pd.DataFrame:
+    """Combine every parsed workbook sheet for whole-file consumers."""
+    workbook = app.state.workbooks.get(workbook_id)
+    if workbook is None:
+        raise WorkbookNotFound(f"No workbook with id '{workbook_id}'.")
+
+    frames = []
+    for sheet in workbook.get("sheets", []):
+        if sheet.get("status") != "parsed":
+            continue
+        frame = app.state.workbooks.get_frame(workbook_id, sheet["id"]).copy()
+        if include_source_sheet:
+            frame["__source_sheet"] = sheet.get("name") or sheet["id"]
+        frames.append(frame)
+
+    if not frames:
+        raise ValueError("This workbook has no parsed sheets to query.")
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _get_current_dashboard_dataframe() -> pd.DataFrame:
+    """Return all parsed sheets for dashboard-wide workbook rendering."""
+    if app.state.workbooks is not None:
+        workbook_id = app.state.current_workbook_id
+        if workbook_id and app.state.workbooks.get(workbook_id) is None:
+            workbook_id = None
+        if workbook_id is None:
+            stored = next(
+                (
+                    workbook
+                    for workbook in app.state.workbook_store.list_workbooks()
+                    if workbook.get("status") in {"parsed", "partially_parsed"}
+                ),
+                None,
+            )
+            if stored:
+                workbook_id = stored["id"]
+                app.state.current_workbook_id = workbook_id
+        if workbook_id:
+            return _get_workbook_query_frame(workbook_id, include_source_sheet=False)
+    return _get_current_dataframe()
+
+
+def _json_safe(payload):
+    """Normalize pandas, NumPy, and Plotly values before API serialization."""
+    return json.loads(json.dumps(payload, cls=PlotlyJSONEncoder))
+
+
 @app.get("/")
 def read_root() -> dict:
     """Basic service info endpoint."""
@@ -269,6 +321,7 @@ async def upload_csv(file: UploadFile = File(...)) -> dict:
                 file_data=contents,
             )
             workbook = service.get(record["id"])
+            app.state.current_workbook_id = record["id"]
         except Exception as exc:  # noqa: BLE001 - the upload itself already succeeded
             logger.warning("Could not register the upload as a workbook: %s", exc)
 
@@ -309,7 +362,7 @@ def list_datasets() -> dict:
 @app.get("/kpis")
 def get_kpis() -> dict:
     """Return generated KPIs for the currently uploaded dataset."""
-    dataframe = _get_current_dataframe()
+    dataframe = _get_current_dashboard_dataframe()
 
     try:
         return generate_kpis(dataframe)
@@ -321,7 +374,7 @@ def get_kpis() -> dict:
 @app.get("/charts")
 def get_charts() -> list:
     """Return recommended chart configurations for the currently uploaded dataset."""
-    dataframe = _get_current_dataframe()
+    dataframe = _get_current_dashboard_dataframe()
 
     try:
         return generate_charts(dataframe)
@@ -336,7 +389,7 @@ def get_dashboard_plan() -> dict:
     """Return structured ecommerce-style dashboard layout plan for the currently uploaded dataset."""
     from src.presentation.dashboard_planner import plan_dashboard
 
-    dataframe = _get_current_dataframe()
+    dataframe = _get_current_dashboard_dataframe()
     try:
         return plan_dashboard(dataframe)
     except Exception as exc:  # noqa: BLE001 - guard against unexpected analysis failures
@@ -356,9 +409,10 @@ def get_dashboard() -> dict:
     """
     from src.presentation.dashboard_planner import generate_dashboard
 
-    dataframe = _get_current_dataframe()
+    dataframe = _get_current_dashboard_dataframe()
+
     try:
-        return generate_dashboard(dataframe)
+        return _json_safe(generate_dashboard(dataframe))
     except Exception as exc:  # noqa: BLE001 - guard against unexpected analysis failures
         logger.exception("Failed to generate dashboard for '%s'", app.state.current_filename)
         raise HTTPException(status_code=500, detail="Failed to generate dashboard.") from exc
@@ -367,7 +421,7 @@ def get_dashboard() -> dict:
 @app.get("/summary")
 def get_summary() -> dict:
     """Return the AI-generated business summary for the currently uploaded dataset."""
-    dataframe = _get_current_dataframe()
+    dataframe = _get_current_dashboard_dataframe()
 
     try:
         return generate_summary(dataframe)
@@ -450,7 +504,21 @@ async def generate_presentation_endpoint(
             with tempfile.NamedTemporaryFile(suffix=Path(safe_name).suffix) as temporary:
                 temporary.write(contents)
                 temporary.flush()
-                dataframe = load_csv(temporary.name)
+                if Path(safe_name).suffix.lower() in {".xlsx", ".xls"}:
+                    parsed = process_workbook(temporary.name)
+                    frames = [
+                        frame
+                        for sheet_id, frame in parsed["frames"].items()
+                        if any(
+                            sheet["id"] == sheet_id and sheet["status"] == "parsed"
+                            for sheet in parsed["sheets"]
+                        )
+                    ]
+                    if not frames:
+                        raise EmptyCSVError(f"Excel file contains no usable sheets: {safe_name}")
+                    dataframe = pd.concat(frames, ignore_index=True, sort=False)
+                else:
+                    dataframe = load_csv(temporary.name)
             source_name = Path(safe_name).stem
         except (EmptyCSVError, CorruptedCSVError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -459,6 +527,24 @@ async def generate_presentation_endpoint(
             raise HTTPException(status_code=500, detail="Failed to process dataset file.") from exc
         finally:
             await file.close()
+
+        app.state.current_dataframe = dataframe
+        app.state.current_filename = safe_name
+        if app.state.workbooks is not None:
+            try:
+                record = app.state.workbooks.create(
+                    file_name=safe_name,
+                    storage_path=f"db://{uuid.uuid4().hex}",
+                    file_type=Path(safe_name).suffix.lower().lstrip("."),
+                    file_data=contents,
+                )
+                app.state.current_workbook_id = record["id"]
+            except Exception:
+                logger.exception("Failed to register direct presentation upload '%s'.", safe_name)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to store the uploaded dataset.",
+                )
 
     # Case 2: Specific dataset id stored in SQLite
     elif dataset_id:
@@ -675,7 +761,28 @@ def download_presentation(filename: str):
 @app.post("/query")
 def post_query(request: QueryRequest) -> dict:
     """Answer a natural language question about the currently uploaded dataset."""
-    dataframe = _get_current_dataframe()
+    workbook_id = app.state.current_workbook_id
+    if app.state.workbooks is not None:
+        if workbook_id and app.state.workbooks.get(workbook_id) is None:
+            workbook_id = None
+        if workbook_id is None:
+            stored = next(
+                (
+                    workbook
+                    for workbook in app.state.workbook_store.list_workbooks()
+                    if workbook.get("status") in {"parsed", "partially_parsed"}
+                ),
+                None,
+            )
+            if stored:
+                workbook_id = stored["id"]
+                app.state.current_workbook_id = workbook_id
+
+    dataframe = (
+        _get_workbook_query_frame(workbook_id)
+        if workbook_id
+        else _get_current_dataframe()
+    )
 
     try:
         return answer_question(dataframe, request.question)
@@ -876,6 +983,7 @@ def activate_workbook(workbook_id: str, request: ActivateWorkbookRequest = None)
 
     app.state.current_dataframe = frame
     app.state.current_filename = workbook["file_name"]
+    app.state.current_workbook_id = workbook_id
     logger.info(
         "Active dataset set to workbook %s (sheet %s, %d rows).",
         workbook_id,
@@ -988,7 +1096,11 @@ def query_workbook(workbook_id: str, request: WorkbookQueryRequest) -> dict:
     service = _workbook_service()
 
     try:
-        frame = service.get_frame(workbook_id, request.sheet_id)
+        frame = (
+            _get_workbook_query_frame(workbook_id)
+            if request.sheet_id is None
+            else service.get_frame(workbook_id, request.sheet_id)
+        )
     except WorkbookNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1008,17 +1120,21 @@ def query_workbook(workbook_id: str, request: WorkbookQueryRequest) -> dict:
 @app.post("/workbooks/{workbook_id}/generate")
 def generate_from_workbook(workbook_id: str, request: WorkbookGenerateRequest) -> dict:
     """
-    Generate a deck from a workbook's sheet.
+    Generate a deck from a workbook.
 
-    The deck agent is handed the workbook's cleaned sheet rather than the
-    raw file, so the generation uses the same data the assistant queries.
+    By default, all parsed sheets are combined so the deck represents the
+    uploaded file. An explicit sheet_id limits generation to one sheet.
     The job runs in a background thread, exactly as the standalone
     generation endpoint does.
     """
     service = _workbook_service()
 
     try:
-        frame = service.get_frame(workbook_id, request.sheet_id)
+        frame = (
+            service.get_frame(workbook_id, request.sheet_id)
+            if request.sheet_id
+            else _get_workbook_query_frame(workbook_id, include_source_sheet=False)
+        )
     except WorkbookNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1026,7 +1142,7 @@ def generate_from_workbook(workbook_id: str, request: WorkbookGenerateRequest) -
 
     if frame is None or frame.empty:
         raise HTTPException(
-            status_code=400, detail="Cannot generate a deck: this sheet is empty."
+            status_code=400, detail="Cannot generate a deck: the workbook has no usable data."
         )
 
     source_name = Path(service.get(workbook_id)["file_name"]).stem

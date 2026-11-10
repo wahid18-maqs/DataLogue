@@ -300,6 +300,92 @@ def _local_plan_fallback(df: pd.DataFrame, question: str) -> Dict[str, Any]:
     }
 
 
+def _repair_ranking_plan(
+    df: pd.DataFrame, question: str, plan: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Make product/category ranking questions aggregate over the right rows."""
+    text = question.lower()
+    ranking_words = ("highest", "most", "top", "best", "lowest", "least")
+    quantity_words = ("sold", "sales", "units", "quantity")
+    if not any(word in text for word in ranking_words):
+        return plan
+    if not any(word in text for word in quantity_words):
+        return plan
+
+    product_candidates = [
+        str(column)
+        for column in df.columns
+        if re.search(r"(product|item|category|model|sku)", str(column), re.IGNORECASE)
+        and not str(column).lower().startswith("unnamed")
+    ]
+    product_column = next(
+        (column for column in product_candidates if "product" in column.lower()),
+        None,
+    ) or next(
+        (column for column in product_candidates if "category" in column.lower()),
+        None,
+    ) or (product_candidates[0] if product_candidates else None)
+    numeric_columns = [
+        str(column)
+        for column in df.columns
+        if pd.api.types.is_numeric_dtype(df[column])
+    ]
+    metric_column = next(
+        (
+            column
+            for column in numeric_columns
+            if re.search(r"(units?\s*sold|quantity|number\s*sold)", column, re.IGNORECASE)
+        ),
+        None,
+    )
+    if metric_column is None:
+        metric_column = next(
+            (
+                column
+                for column in numeric_columns
+                if re.search(r"(gross\s*sales|net\s*sales|revenue|sales)", column, re.IGNORECASE)
+            ),
+            None,
+        )
+    if not product_column or not metric_column:
+        return plan
+
+    descending = not any(word in text for word in ("lowest", "least"))
+    alias = f"sum_{metric_column}"
+    ordinal_match = re.search(
+        r"\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th)\b",
+        text,
+    )
+    ordinal_counts = {
+        "first": 1,
+        "1st": 1,
+        "second": 2,
+        "2nd": 2,
+        "third": 3,
+        "3rd": 3,
+        "fourth": 4,
+        "4th": 4,
+        "fifth": 5,
+        "5th": 5,
+    }
+    rank = ordinal_counts.get(ordinal_match.group(1), 1) if ordinal_match else 1
+    return {
+        **plan,
+        "filters": [
+            *(
+                plan.get("filters", [])
+                if isinstance(plan.get("filters"), list)
+                else []
+            ),
+            {"column": product_column, "op": "notnull", "value": True},
+        ],
+        "group_by": product_column,
+        "metrics": [{"column": metric_column, "agg": "sum", "as": alias}],
+        "order": {"column": alias, "by": "desc" if descending else "asc"},
+        "limit": {"mode": "head", "count": rank},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Step 5: result narration
 # ---------------------------------------------------------------------------
@@ -472,6 +558,7 @@ def answer_question(df: pd.DataFrame, question: str) -> Dict[str, Any]:
                 "intent": INTENT_COMPUTE,
                 "plan": None,
             }
+    plan = _repair_ranking_plan(df, question, plan)
 
     try:
         computed = run_plan(df, plan)

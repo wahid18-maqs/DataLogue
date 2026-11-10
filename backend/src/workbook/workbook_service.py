@@ -553,7 +553,21 @@ class WorkbookService:
 
         # Not cached: re-parse the file and cache what comes out.
         logger.info("Workbook %s sheet %s is not cached; re-parsing.", workbook_id, target)
-        result = process_workbook(workbook["storage_path"])
+        temporary_path = None
+        source_path = workbook["storage_path"]
+        if workbook.get("file_data") is not None:
+            with tempfile.NamedTemporaryFile(
+                suffix=Path(workbook["file_name"]).suffix,
+                delete=False,
+            ) as temporary:
+                temporary.write(workbook["file_data"])
+                temporary_path = Path(temporary.name)
+            source_path = str(temporary_path)
+        try:
+            result = process_workbook(source_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         for sheet_key, frame in result["frames"].items():
             self.cache.put(workbook_id, sheet_key, frame)
 

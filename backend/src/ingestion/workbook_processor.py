@@ -235,23 +235,48 @@ def looks_tabular(frame: pd.DataFrame) -> bool:
     return True
 
 
-def classify_sheet(frame: pd.DataFrame) -> Dict[str, Any]:
+def classify_sheet(frame: pd.DataFrame, name: str = "") -> Dict[str, Any]:
     """Classify a sheet before deriving metrics from it."""
     if frame is None or frame.empty:
         return {"class": "not_data", "skip_reason": "The sheet is empty."}
 
     non_null = frame.notna().sum().sum()
     density = non_null / max(frame.shape[0] * frame.shape[1], 1)
+    normalized_name = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+    values = " ".join(
+        str(value).lower() for value in frame.head(8).fillna("").values.ravel()
+    )
+    calculator_signal = any(
+        token in f"{normalized_name} {values}"
+        for token in ("calculator", "lookup", "vlookup", "index match", "select a product")
+    )
+    if calculator_signal and (
+        frame.shape[1] >= 6
+        or frame.shape[0] <= 25
+        or density < 0.65
+    ):
+        return {
+            "class": "not_data",
+            "skip_reason": "This sheet appears to be a calculator or lookup tool, not source data.",
+        }
     if not looks_tabular(frame):
         return {
             "class": "not_data",
             "skip_reason": "This sheet does not contain a dense tabular region.",
         }
 
-    text = " ".join(str(value).lower() for value in frame.head(5).fillna("").values.ravel())
-    if any(token in text for token in ("profit and loss", "income statement", "balance sheet", "ebitda")):
+    period_columns = sum(
+        bool(re.search(r"\b(?:q[1-4]|fy|20\d{2})\b", str(column).lower()))
+        for column in frame.columns
+    )
+    if (
+        any(token in f"{normalized_name} {values}" for token in (
+            "financial", "profit and loss", "income statement", "balance sheet", "ebitda"
+        ))
+        or ("line item" in values and period_columns >= 2)
+    ):
         return {"class": "wide_financial", "skip_reason": None}
-    if frame.shape[1] >= 12 and density < 0.45:
+    if "dashboard" in normalized_name or (frame.shape[1] >= 8 and density < 0.7):
         return {"class": "dashboard", "skip_reason": None}
     if frame.shape[1] == 1 or (
         frame.shape[0] <= 20 and frame.shape[1] <= 3 and density < 0.7
@@ -578,7 +603,7 @@ def process_sheet(
         "auto_summary": auto_summary,
         "status": "parsed",
         "error_reason": None,
-        "sheet_class": classify_sheet(cleaned)["class"],
+        "sheet_class": classify_sheet(cleaned, name)["class"],
         "skip_reason": None,
         "processing_notice": processing_notice,
     }
@@ -634,7 +659,7 @@ def process_workbook(path: str) -> Dict[str, Any]:
 
     for index, (name, frame) in enumerate(raw_sheets.items()):
         sheet_id = f"sheet_{index + 1}"
-        classification = classify_sheet(frame)
+        classification = classify_sheet(frame, name)
 
         if classification["class"] == "not_data":
             record = {

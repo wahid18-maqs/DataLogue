@@ -169,7 +169,23 @@ def _build_ecommerce_main_timeseries(
     """
     if datetime_col and revenue_col:
         parsed_dates = pd.to_datetime(df[datetime_col], errors="coerce")
-        valid_mask = parsed_dates.notna() & df[revenue_col].notna()
+        numeric_candidates = [
+            str(column)
+            for column in df.columns
+            if pd.to_numeric(df[column], errors="coerce").notna().sum() >= 2
+            and not any(word in str(column).lower() for word in ("id", "%", "price"))
+        ]
+        overlap_candidates = [
+            column for column in numeric_candidates
+            if pd.to_numeric(
+                df.loc[parsed_dates.notna(), column], errors="coerce"
+            ).notna().sum() >= 2
+        ]
+        if revenue_col not in overlap_candidates:
+            revenue_col = overlap_candidates[0] if overlap_candidates else revenue_col
+        valid_mask = parsed_dates.notna() & pd.to_numeric(
+            df[revenue_col], errors="coerce"
+        ).notna()
 
         # Decide whether to break down by a categorical column (2 to 5 unique values max)
         valid_breakdown = False
@@ -180,7 +196,7 @@ def _build_ecommerce_main_timeseries(
 
         sub_df = pd.DataFrame({
             "date": parsed_dates[valid_mask],
-            "val": df.loc[valid_mask, revenue_col].astype(float)
+        "val": pd.to_numeric(df.loc[valid_mask, revenue_col], errors="coerce")
         })
 
         if valid_breakdown:
@@ -399,8 +415,24 @@ def generate_ecommerce_charts(
     # Chart 3: Donut/pie for top categories/products
     if category_col:
         cat_title = f"Top {category_col}s" + (f" by {revenue_col}" if revenue_col else "")
-        if revenue_col and revenue_col in df.columns:
-            cat_grouped = df.groupby(category_col)[revenue_col].sum().sort_values(ascending=False).head(7)
+        pie_value_col = revenue_col
+        if pie_value_col:
+            category_values = pd.to_numeric(
+                df.loc[df[category_col].notna(), pie_value_col], errors="coerce"
+            )
+        if not pie_value_col or category_values.notna().sum() == 0:
+            pie_value_col = next(
+                (
+                    column for column in df.columns
+                    if pd.to_numeric(df.loc[df[category_col].notna(), column], errors="coerce").notna().sum() > 0
+                    and "id" not in str(column).lower()
+                ),
+                None,
+            )
+        if pie_value_col:
+            cat_grouped = df.assign(
+                _pie_value=pd.to_numeric(df[pie_value_col], errors="coerce")
+            ).groupby(category_col)["_pie_value"].sum().sort_values(ascending=False).head(7)
             pie_labels = cat_grouped.index.astype(str).tolist()
             pie_vals = cat_grouped.values.round(2).tolist()
         else:
@@ -413,7 +445,7 @@ def generate_ecommerce_charts(
         secondary_charts.append({
             "chart_type": "pie",
             "title": cat_title,
-            "columns": [category_col] + ([revenue_col] if revenue_col else []),
+            "columns": [category_col] + ([pie_value_col] if pie_value_col else []),
             "figure": fig_pie.to_dict(),
             "layout_slot": "secondary",
         })

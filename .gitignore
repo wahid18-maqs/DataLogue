@@ -23,3 +23,4 @@ node_modules/
 frontend/dist/
 
 run.txt
+DataLogue/backend/tests/test-complex.xlsx

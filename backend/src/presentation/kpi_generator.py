@@ -11,6 +11,20 @@ logger = logging.getLogger(__name__)
 
 # Cap on how many top categorical values are reported per column.
 MAX_TOP_VALUES = 10
+TOTAL_LABELS = {"total", "all", "grand total", "subtotal"}
+
+
+def _business_values(series: pd.Series) -> pd.Series:
+    """Exclude report-total rows from category and status KPIs."""
+    values = series.dropna()
+    return values[~values.astype(str).str.strip().str.lower().isin(TOTAL_LABELS)]
+
+
+def _plural_label(name: str) -> str:
+    """Create a readable plural label without changing the source column."""
+    if name.lower().endswith("y") and len(name) > 1 and name[-2].lower() not in "aeiou":
+        return f"{name[:-1]}ies"
+    return name if name.lower().endswith("s") else f"{name}s"
 
 
 def _numeric_column_stats(df: pd.DataFrame, columns: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -135,15 +149,11 @@ def generate_ecommerce_kpis(
             "label": f"Total {rev_col}",
             "value": f"{tot_rev:,.2f}",
             "numeric_value": round(tot_rev, 2),
-            "trend": "+12.5%",
-            "trend_direction": "up"
         })
         quick_stats.append({
             "label": f"Avg {rev_col}",
             "value": f"{avg_rev:,.2f}",
             "numeric_value": round(avg_rev, 2),
-            "trend": "+3.2%",
-            "trend_direction": "up"
         })
 
     # 2. Orders / Activity Volume
@@ -163,8 +173,6 @@ def generate_ecommerce_kpis(
             "label": f"Total {order_col}",
             "value": val_display,
             "numeric_value": round(tot_orders, 2),
-            "trend": "+5.8%",
-            "trend_direction": "up"
         })
     else:
         kpis.append({
@@ -179,16 +187,14 @@ def generate_ecommerce_kpis(
             "label": "Total Orders",
             "value": f"{total_rows:,}",
             "numeric_value": total_rows,
-            "trend": "+4.1%",
-            "trend_direction": "up"
         })
 
     # 3. Customers
     if cust_col and cust_col in df.columns:
-        n_cust = int(df[cust_col].dropna().nunique())
+        n_cust = int(_business_values(df[cust_col]).nunique())
         kpis.append({
             "key": "unique_customers",
-            "label": f"Unique {cust_col}s",
+            "label": f"Unique {_plural_label(cust_col)}",
             "value": n_cust,
             "formatted": f"{n_cust:,}",
             "column": cust_col,
@@ -198,16 +204,14 @@ def generate_ecommerce_kpis(
             "label": f"Customers",
             "value": f"{n_cust:,}",
             "numeric_value": n_cust,
-            "trend": "+8.4%",
-            "trend_direction": "up"
         })
 
     # 4. Categories or Statuses
     if cat_col and cat_col in df.columns:
-        n_cats = int(df[cat_col].dropna().nunique())
+        n_cats = int(_business_values(df[cat_col]).nunique())
         kpis.append({
             "key": "active_categories",
-            "label": f"Active {cat_col}s",
+            "label": f"Active {_plural_label(cat_col)}",
             "value": n_cats,
             "formatted": f"{n_cats:,}",
             "column": cat_col,
@@ -215,7 +219,7 @@ def generate_ecommerce_kpis(
         })
 
     if status_col and status_col in df.columns and len(kpis) < 5:
-        top_status = df[status_col].dropna().value_counts()
+        top_status = _business_values(df[status_col]).value_counts()
         if not top_status.empty:
             lead_status = str(top_status.index[0])
             pct = round((top_status.iloc[0] / max(total_rows, 1)) * 100, 1)

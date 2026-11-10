@@ -27,6 +27,8 @@ ORDER_COUNT_KEYWORDS = [
     "count", "sales_count"
 ]
 
+ORDER_VOLUME_PENALTIES = ["price", "cost", "amount", "revenue", "sales", "value"]
+
 CUSTOMER_KEYWORDS = [
     "customer", "client", "buyer", "user", "consumer", "shopper", "account",
     "member", "subscriber", "visitor", "lead"
@@ -201,6 +203,10 @@ def _detect_order_metric(df: pd.DataFrame, numeric_columns: List[str], total_row
 
         norm = _normalize(col)
         score = _keyword_score(norm, ORDER_COUNT_KEYWORDS)
+        if any(token in norm for token in ORDER_VOLUME_PENALTIES):
+            score -= 5.0
+        if any(token in norm for token in ("quantity", "qty", "units", "count")):
+            score += 4.0
         if score > best_score:
             best_score = score
             best_col = col
@@ -300,21 +306,16 @@ def _detect_status_column(
             continue
 
         norm = _normalize(col)
-        score = _keyword_score(norm, STATUS_KEYWORDS)
+        keyword_score = _keyword_score(norm, STATUS_KEYWORDS)
+        score = keyword_score
 
         # Prefer 2-5 values for a compact donut/radial breakdown
         if 2 <= n_unique <= 4:
             score += 2.0
 
-        if score > best_score:
+        if keyword_score > 0 and score > best_score:
             best_score = score
             best_col = col
-
-    # Fallback: if keywords don't match, pick any 2-4 category column
-    if best_col is None:
-        low_cardinality = [c for c in candidates if 2 <= df[c].dropna().nunique() <= 5]
-        if low_cardinality:
-            best_col = low_cardinality[0]
 
     return best_col
 
@@ -362,47 +363,94 @@ def _build_main_chart(
     datetime_col: Optional[str],
     revenue_col: Optional[str]
 ) -> Dict[str, Any]:
-    """Build the large main line/area chart: total sales/revenue over time."""
+    """Build a multi-series time chart from the strongest numeric measures."""
     if datetime_col and revenue_col:
-        # Time-aggregated series
         parsed_dates = pd.to_datetime(df[datetime_col], errors="coerce")
-        valid_mask = parsed_dates.notna() & df[revenue_col].notna()
-        sub_df = pd.DataFrame({
-            "date": parsed_dates[valid_mask],
-            "val": df.loc[valid_mask, revenue_col].astype(float)
-        }).sort_values(by="date")
+        numeric_columns = [
+            str(column)
+            for column in df.columns
+            if pd.to_numeric(df[column], errors="coerce").notna().sum() >= 2
+        ]
+        preferred = ("sales", "revenue", "profit", "cost", "price", "units", "quantity")
+        candidates = sorted(
+            numeric_columns,
+            key=lambda column: (
+                0 if column == revenue_col else 1,
+                next(
+                    (index for index, word in enumerate(preferred) if word in column.lower()),
+                    len(preferred),
+                ),
+            ),
+        )
+        measures = [
+            column
+            for column in candidates
+            if not any(
+                excluded in column.lower()
+                for excluded in ("%", "percent", "id", "price")
+            )
+            if parsed_dates.notna().sum() and pd.to_numeric(
+                df.loc[parsed_dates.notna(), column], errors="coerce"
+            ).notna().sum() >= 2
+        ][:4]
+        overlap_measures = [
+            column
+            for column in numeric_columns
+            if not any(excluded in column.lower() for excluded in ("%", "percent", "id", "price"))
+            and pd.to_numeric(
+                df.loc[parsed_dates.notna(), column], errors="coerce"
+            ).notna().sum() >= 2
+        ]
+        if overlap_measures:
+            measures = overlap_measures[:4]
+        if revenue_col in numeric_columns and revenue_col not in measures and pd.to_numeric(
+            df.loc[parsed_dates.notna(), revenue_col], errors="coerce"
+        ).notna().sum() >= 2:
+            measures.insert(0, revenue_col)
+        measures = measures[:4]
 
-        # Aggregate if many points (> 30 points -> monthly or daily)
-        if len(sub_df) > 30:
-            # Check date range
-            date_range = (sub_df["date"].max() - sub_df["date"].min()).days
+        valid_dates = parsed_dates.notna()
+        values = pd.DataFrame({"date": parsed_dates[valid_dates]})
+        for column in measures:
+            values[column] = pd.to_numeric(
+                df.loc[valid_dates, column], errors="coerce"
+            ).to_numpy()
+        values = values.dropna(subset=["date"]).sort_values("date")
+
+        if len(values) > 30:
+            date_range = (values["date"].max() - values["date"].min()).days
             freq = "M" if date_range > 90 else "D"
-            sub_df["period"] = sub_df["date"].dt.to_period(freq).astype(str)
-            grouped = sub_df.groupby("period")["val"].sum().reset_index()
+            values["period"] = values["date"].dt.to_period(freq).astype(str)
+            grouped = values.groupby("period", as_index=False)[measures].sum()
             x_vals = grouped["period"].tolist()
-            y_vals = grouped["val"].round(2).tolist()
+            series_values = {
+                column: grouped[column].round(2).tolist() for column in measures
+            }
         else:
-            x_vals = sub_df["date"].dt.strftime("%Y-%m-%d").tolist()
-            y_vals = sub_df["val"].round(2).tolist()
+            x_vals = values["date"].dt.strftime("%Y-%m-%d").tolist()
+            series_values = {
+                column: values[column].round(2).where(values[column].notna()).tolist()
+                for column in measures
+            }
 
-        title = f"{revenue_col} Over Time"
+        title = "Sales, Profit and Cost Over Time" if len(measures) > 1 else f"{revenue_col} Over Time"
         figure = go.Figure(
             data=[
                 go.Scatter(
                     x=x_vals,
-                    y=y_vals,
+                    y=series_values[column],
                     mode="lines+markers",
-                    fill="tozeroy",
-                    name=revenue_col
+                    name=column,
                 )
+                for column in measures
             ]
         )
-        figure.update_layout(title=title, xaxis_title=datetime_col, yaxis_title=revenue_col)
+        figure.update_layout(title=title, xaxis_title=datetime_col, yaxis_title="Value")
 
         return {
             "chart_type": "line",
             "title": title,
-            "columns": [datetime_col, revenue_col],
+            "columns": [datetime_col, *measures],
             "figure": figure.to_dict(),
             "layout_slot": "main",
         }
@@ -556,7 +604,31 @@ def _build_donut_chart(
 ) -> Dict[str, Any]:
     """Build small donut/pie chart."""
     if value_col:
-        grouped = df.groupby(col_name)[value_col].sum().sort_values(ascending=False).head(8)
+        candidate = value_col
+        value_series = pd.to_numeric(
+            df.loc[df[col_name].notna(), candidate], errors="coerce"
+        )
+        if value_series.notna().sum() == 0:
+            candidate = next(
+                (
+                    str(column)
+                    for column in df.columns
+                    if pd.to_numeric(df[column], errors="coerce").notna().sum() > 0
+                    and "id" not in str(column).lower()
+                ),
+                None,
+            )
+        if candidate:
+            grouped = (
+                df.assign(_chart_value=pd.to_numeric(df[candidate], errors="coerce"))
+                .groupby(col_name)["_chart_value"]
+                .sum()
+                .sort_values(ascending=False)
+                .head(8)
+            )
+            value_col = candidate
+        else:
+            grouped = df[col_name].dropna().value_counts().head(8)
         labels = grouped.index.astype(str).tolist()
         values = grouped.values.round(2).tolist()
     else:
@@ -723,6 +795,16 @@ def detect_roles(df: pd.DataFrame, schema: Optional[Dict[str, Any]] = None) -> D
 
     datetime_col = _detect_datetime_column(df, datetime_columns)
     revenue_col = _detect_revenue_column(df, numeric_columns, total_rows)
+    financial_columns = [
+        column for column in all_columns
+        if re.search(r"(?:^|_)(?:q[1-4]|fy|full_year|20\d{2})(?:_|$)", _normalize(column))
+    ]
+    if "line_item" in {_normalize(column) for column in all_columns} and len(financial_columns) >= 2:
+        annual = next(
+            (column for column in financial_columns if "full" in _normalize(column) or "fy" in _normalize(column)),
+            None,
+        )
+        revenue_col = annual or financial_columns[-1]
     order_col, agg_mode = _detect_order_metric(df, numeric_columns, total_rows, exclude_col=revenue_col)
     cust_col = _detect_customer_column(df, all_columns, total_rows)
 
@@ -731,6 +813,8 @@ def detect_roles(df: pd.DataFrame, schema: Optional[Dict[str, Any]] = None) -> D
         excluded_cats.add(cust_col)
 
     category_col = _detect_category_column(df, categorical_columns, excluded_cats)
+    if "line_item" in {_normalize(column) for column in all_columns} and category_col == "Line Item":
+        category_col = None
     if category_col:
         excluded_cats.add(category_col)
 

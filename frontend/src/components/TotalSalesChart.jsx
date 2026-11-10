@@ -8,12 +8,10 @@
 
 import { useState } from "react";
 import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -61,37 +59,30 @@ export default function TotalSalesChart({ chart }) {
   }
 
   const traces = chart.figure.data || [];
-  const chartType = chart.chart_type || "line";
 
   // Build unified rows from Plotly traces: array of { period, series1, series2, ... }
   let data = [];
   const seriesKeys = [];
 
-  if (chartType === "bar") {
-    const trace = traces[0] || {};
-    const xVals = trace.x || [];
-    const yVals = trace.y || [];
-    data = xVals.map((x, i) => ({
-      name: String(x),
-      value: yVals[i] ?? 0,
-    }));
-  } else {
-    // Multi-series or single line/area
-    const xVals = traces[0]?.x || [];
-    traces.forEach((trace, idx) => {
-      const keyName = trace.name || `Series ${idx + 1}`;
-      seriesKeys.push({ key: keyName, color: chartTheme.series[idx % chartTheme.series.length] });
-    });
+  const traceKey = (trace, idx) => trace.name || `Series ${idx + 1}`;
+  const firstTraceWithValues = traces.find((trace) => (trace.x?.length || trace.y?.length));
+  const xVals = firstTraceWithValues?.x?.length
+    ? firstTraceWithValues.x
+    : (firstTraceWithValues?.y || []).map((_, index) => index + 1);
+  traces.forEach((trace, idx) => {
+    const keyName = traceKey(trace, idx);
+    seriesKeys.push({ key: keyName, color: chartTheme.series[idx % chartTheme.series.length] });
+  });
 
-    data = xVals.map((x, i) => {
-      const row = { name: String(x) };
-      traces.forEach((trace) => {
-        const keyName = trace.name || "Value";
-        row[keyName] = trace.y?.[i] ?? 0;
-      });
-      return row;
+  data = xVals.map((x, i) => {
+    const row = { name: String(x) };
+    traces.forEach((trace, idx) => {
+      const keyName = traceKey(trace, idx);
+      const value = Number(trace.y?.[i]);
+      row[keyName] = Number.isFinite(value) ? value : null;
     });
-  }
+    return row;
+  });
 
   // Handle client-side filter control simulation (Last 30 days, 90 days, All)
   let displayedData = data;
@@ -149,44 +140,26 @@ export default function TotalSalesChart({ chart }) {
         </div>
 
         {/* Main Chart Area */}
-        <div className="min-h-[200px] w-full flex-1 pt-2">
+        <div className="h-[320px] min-h-[200px] w-full flex-1 pt-2">
           <ResponsiveContainer width="100%" height="100%">
-            {chartType === "bar" ? (
-              <BarChart data={displayedData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: chartTheme.tick }} axisLine={{ stroke: chartTheme.axis }} />
-                <YAxis tick={{ fontSize: 11, fill: chartTheme.tick }} tickFormatter={formatYAxis} axisLine={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="value" fill={chartTheme.series[0]} radius={[6, 6, 0, 0]} maxBarSize={45} />
-              </BarChart>
-            ) : (
-              <AreaChart data={displayedData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <defs>
-                  {seriesKeys.map((s, idx) => (
-                    <linearGradient key={s.key} id={`color-${idx}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={s.color} stopOpacity={0.25} />
-                      <stop offset="95%" stopColor={s.color} stopOpacity={0.0} />
-                    </linearGradient>
-                  ))}
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
-                <XAxis dataKey="name" tick={{ fontSize: 11, fill: chartTheme.tick }} axisLine={{ stroke: chartTheme.axis }} />
-                <YAxis tick={{ fontSize: 11, fill: chartTheme.tick }} tickFormatter={formatYAxis} axisLine={false} />
-                <Tooltip content={<CustomTooltip />} />
-                {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
-                {seriesKeys.map((s, idx) => (
-                  <Area
-                    key={s.key}
-                    type="monotone"
-                    dataKey={s.key}
-                    stroke={s.color}
-                    strokeWidth={2.5}
-                    fillOpacity={1}
-                    fill={`url(#color-${idx})`}
-                  />
-                ))}
-              </AreaChart>
-            )}
+            <LineChart data={displayedData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: chartTheme.tick }} axisLine={{ stroke: chartTheme.axis }} />
+              <YAxis tick={{ fontSize: 11, fill: chartTheme.tick }} tickFormatter={formatYAxis} axisLine={false} />
+              <Tooltip content={<CustomTooltip />} />
+              {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
+              {seriesKeys.map((s) => (
+                <Line
+                  key={s.key}
+                  type="monotone"
+                  dataKey={s.key}
+                  stroke={s.color}
+                  strokeWidth={2.5}
+                  dot={{ r: 2 }}
+                  activeDot={{ r: 4 }}
+                />
+              ))}
+            </LineChart>
           </ResponsiveContainer>
         </div>
       </div>

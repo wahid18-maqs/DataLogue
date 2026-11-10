@@ -115,7 +115,7 @@ function SmallChartCard({ chart }) {
             {title}
           </h3>
         </div>
-        <div className="min-h-[120px] w-full flex-1">
+        <div className="h-[180px] min-h-[120px] w-full flex-1">
           <ResponsiveContainer width="100%" height="100%">
             {content}
           </ResponsiveContainer>
